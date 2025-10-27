@@ -74,3 +74,10 @@
     padding: 4px 0 !important;
   }
 }
+
+/* Gauge layout helper */
+.gauge-wrap{
+  display:grid;
+  place-items:center;
+  margin-top:.25rem; /* nudge down a touch */
+}

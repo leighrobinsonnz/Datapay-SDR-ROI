@@ -1,240 +1,249 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
-/* ------------------------------ Types & data ------------------------------- */
+/* ──────────────────────────────────────────────────────────────────────────────
+   Segment config (Council vs Enterprise) with weighting & tooltip
+────────────────────────────────────────────────────────────────────────────── */
+type SegmentKey = "Council" | "Enterprise";
 
-type PayCycle = { label: string; value: number };
-const PAY_CYCLES: PayCycle[] = [
-  { label: "52 (Weekly)", value: 52 },
-  { label: "26 (Fortnightly)", value: 26 },
-  { label: "24 (Semi-monthly)", value: 24 },
-  { label: "12 (Monthly)", value: 12 },
-];
-
-type RiskBandKey = "low" | "medium" | "high";
-const RISK_BANDS: Record<
-  RiskBandKey,
-  { label: string; min: number; max: number; mid: number }
+const SEGMENTS: Record<
+  SegmentKey,
+  {
+    label: string;
+    manualFactor: number; // impacts manual processing savings
+    complianceFactor: number; // impacts compliance efficiency & risk avoidance
+    recordFactor: number; // impacts record-keeping savings
+    tooltip: string;
+  }
 > = {
-  low: { label: "Low ($0–$10,000)", min: 0, max: 10_000, mid: 5_000 },
-  medium: { label: "Medium ($10,000–$30,000)", min: 10_000, max: 30_000, mid: 20_000 },
-  high: { label: "High ($30,000–$100,000)", min: 30_000, max: 100_000, mid: 65_000 },
+  Council: {
+    label: "Council",
+    manualFactor: 1.05,
+    complianceFactor: 1.25,
+    recordFactor: 1.15,
+    tooltip:
+      "Councils typically have heavier statutory reporting & audit obligations. We weight compliance and record-keeping savings higher.",
+  },
+  Enterprise: {
+    label: "Enterprise",
+    manualFactor: 1.15,
+    complianceFactor: 1.15,
+    recordFactor: 1.05,
+    tooltip:
+      "Enterprises usually have larger volume & complex workforce patterns. We weight manual processing and compliance moderately.",
+  },
 };
 
-/* ------------------------------ Small helpers ------------------------------ */
-
-function clamp(n: number, lo: number, hi: number) {
-  return Math.max(lo, Math.min(hi, n));
+/* ──────────────────────────────────────────────────────────────────────────────
+   Small UI helpers
+────────────────────────────────────────────────────────────────────────────── */
+function Label({ children }: { children: React.ReactNode }) {
+  return <div className="label">{children}</div>;
 }
 
-function nzMoney(n: number) {
-  return n.toLocaleString("en-NZ", {
-    style: "currency",
-    currency: "NZD",
-    maximumFractionDigits: 0,
-  });
+function Value({ children }: { children: React.ReactNode }) {
+  return <div className="value">{children}</div>;
 }
 
-/* ------------------------------ UI subcomponents --------------------------- */
-
-function InfoTip({
-  title,
-  content,
-}: {
-  title: string;
-  content: React.ReactNode;
-}) {
-  const [open, setOpen] = useState(false);
+function InfoDot({ title }: { title: string }) {
   return (
-    <span className="relative inline-block align-middle ml-2">
-      <button
-        type="button"
-        aria-label={`More info: ${title}`}
-        className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-slate-300 text-slate-500 hover:bg-slate-50"
-        onClick={() => setOpen((v) => !v)}
-      >
-        i
-      </button>
-      {open && (
-        <div
-          role="dialog"
-          aria-label={title}
-          className="absolute z-20 mt-2 w-72 rounded-lg border border-slate-200 bg-white p-3 text-sm shadow-md"
-        >
-          <div className="mb-1 font-medium text-slate-800">{title}</div>
-          <div className="text-slate-600">{content}</div>
-          <div className="text-right mt-2">
-            <button
-              className="text-xs text-slate-500 hover:text-slate-700"
-              onClick={() => setOpen(false)}
-            >
-              Close
-            </button>
-          </div>
-        </div>
-      )}
+    <span
+      title={title}
+      className="ml-2 inline-flex h-5 w-5 items-center justify-center rounded-full border border-slate-300 text-slate-500 text-xs"
+      aria-label="More info"
+      role="img"
+    >
+      i
     </span>
   );
 }
 
-function MiniGauge({
-  label,
-  dollars,
-  total,
-  tip,
+function SegmentToggle({
+  value,
+  onChange,
 }: {
-  label: string;
-  dollars: number;
-  total: number;
-  tip?: React.ReactNode;
+  value: SegmentKey;
+  onChange: (s: SegmentKey) => void;
 }) {
-  const pct = total > 0 ? clamp((dollars / total) * 100, 0, 100) : 0;
   return (
-    <div className="w-full">
-      <div className="flex items-center justify-between gap-2">
-        <div className="label flex items-center">
-          {label}
-          {tip ? <InfoTip title={label} content={tip} /> : null}
+    <div className="flex gap-2 print:hidden">
+      {(Object.keys(SEGMENTS) as SegmentKey[]).map((key) => {
+        const active = value === key;
+        return (
+          <button
+            key={key}
+            type="button"
+            onClick={() => onChange(key)}
+            className={[
+              "inline-flex items-center gap-2 rounded-full px-4 py-2 border transition",
+              active
+                ? "bg-teal-700 text-white border-teal-700"
+                : "bg-white text-slate-700 border-slate-300 hover:border-slate-400",
+            ].join(" ")}
+            aria-pressed={active}
+            title={SEGMENTS[key].tooltip}
+          >
+            {SEGMENTS[key].label}
+            <InfoDot title={SEGMENTS[key].tooltip} />
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
+   Gauge (semi-circle) — % text above; arc stays inside card
+   - Uses a single path with pathLength=100 so we can strokeDasharray `${pct} 100`
+────────────────────────────────────────────────────────────────────────────── */
+function SemiGauge({
+  percent,
+  className,
+}: {
+  percent: number;
+  className?: string;
+}) {
+  const pct = Math.max(0, Math.min(100, percent));
+
+  // SVG viewBox is 200x120; arc runs left→right along y=110 with radius=90
+  // This keeps generous padding so it never overflows its card.
+  return (
+    <div className={className}>
+      <div className="text-center">
+        <div className="text-5xl font-extrabold tracking-tight text-slate-800">
+          {pct}%
         </div>
-        <div className="value">{nzMoney(dollars)}</div>
       </div>
-      <div className="mt-1 h-2 w-full overflow-hidden rounded-full bg-slate-100">
-        <div
-          className="h-2 bg-teal-700"
-          style={{ width: `${pct}%` }}
-          aria-hidden
-        />
-      </div>
-    </div>
-  );
-}
-
-function MainGauge({ valuePct }: { valuePct: number }) {
-  const clamped = clamp(valuePct, 0, 100);
-  const total = 126;
-  const dash = (clamped / 100) * total;
-
-  return (
-    <div className="flex items-center justify-center">
-      <svg viewBox="0 0 100 60" className="w-full max-w-md">
-        {/* Centered percentage label INSIDE the SVG (never overlaps the arc) */}
-        <text
-          x="50"
-          y="18"
-          textAnchor="middle"
-          className="fill-slate-700 font-bold"
-          fontSize="14"
+      <div className="mt-4 flex w-full justify-center">
+        <svg
+          viewBox="0 0 200 120"
+          width="100%"
+          height="auto"
+          className="max-w-[520px]"
+          aria-label={`Efficiency ${pct}%`}
         >
-          {Math.round(clamped)}%
-        </text>
-
-        {/* Background arc */}
-        <path
-          d="M10,60 A40,40 0 0,1 90,60"
-          fill="none"
-          stroke="#e2e8f0"
-          strokeWidth="12"
-          strokeLinecap="round"
-        />
-        {/* Value arc */}
-        <path
-          d="M10,60 A40,40 0 0,1 90,60"
-          fill="none"
-          stroke="#0f766e"
-          strokeWidth="12"
-          strokeLinecap="round"
-          strokeDasharray={`${dash} ${total}`}
-        />
-      </svg>
+          {/* background arc */}
+          <path
+            d="M10 110 A90 90 0 0 1 190 110"
+            fill="none"
+            stroke="#E5ECF2"
+            strokeWidth="16"
+            pathLength={100}
+            strokeLinecap="round"
+          />
+          {/* foreground arc */}
+          <path
+            d="M10 110 A90 90 0 0 1 190 110"
+            fill="none"
+            stroke="#11655D"
+            strokeWidth="16"
+            pathLength={100}
+            strokeDasharray={`${pct} 100`}
+            strokeLinecap="round"
+          />
+        </svg>
+      </div>
     </div>
   );
 }
 
-/* --------------------------------- Page ------------------------------------ */
-
+/* ──────────────────────────────────────────────────────────────────────────────
+   Main page
+────────────────────────────────────────────────────────────────────────────── */
 export default function Page() {
-  /* --------------------------- Inputs (left column) ------------------------ */
-  const [employees, setEmployees] = useState<number>(250);
-  const [payCycles, setPayCycles] = useState<number>(26);
-  const [avgHoursPerCycle, setAvgHoursPerCycle] = useState<number>(8);
-  const [errorRatePct, setErrorRatePct] = useState<number>(3); // % of cycle hours you can claw back
-  const [hourlyRate, setHourlyRate] = useState<number>(55);
+  // top buttons
+  const [segment, setSegment] = useState<SegmentKey>("Council");
 
-  // NEW inputs
-  const [recordKeepingEffPct, setRecordKeepingEffPct] = useState<number>(5.5); // % extra efficiency for records/reporting
-  const [riskBand, setRiskBand] = useState<RiskBandKey>("medium");
-  const [incidentProbPct, setIncidentProbPct] = useState<number>(8); // annualised probability
+  // Inputs
+  const [employees, setEmployees] = useState(250);
+  const [payCycles, setPayCycles] = useState(26); // fortnightly
+  const [avgHoursPerCycle, setAvgHoursPerCycle] = useState(8);
+  const [errorRatePct, setErrorRatePct] = useState(3);
+  const [hourlyRate, setHourlyRate] = useState(55);
 
-  /* ------------------------------ Calculations ----------------------------- */
+  // New inputs for extended ROI
+  const [recordEffPct, setRecordEffPct] = useState(5.5);
+  const [penaltyBand, setPenaltyBand] = useState<
+    "Low ($0–$10,000)" | "Medium ($10,000–$30,000)" | "High ($30,000–$100,000)"
+  >("Medium ($10,000–$30,000)");
+  const [incidentProbPct, setIncidentProbPct] = useState(8);
+
   const {
+    // breakdown
+    efficiencyTimeSaved,
+    manualProcessingSavings,
+    complianceEfficiencySavings,
+    errorReductionSavings,
+    recordKeepingSavings,
+    complianceRiskAvoidance,
+    // headline
+    totalAnnualSavings,
     currentAdminHours,
     currentAdminCost,
     hoursBackToTeam,
-    efficiencyDollars,
-    byCategory,
-    complianceRiskDollars,
-    recordKeepingDollars,
-    totalAnnualSavings,
     efficiencyPct,
   } = useMemo(() => {
-    // base hours/cost
+    // current baseline admin effort/cost
     const currentAdminHours = payCycles * avgHoursPerCycle;
     const currentAdminCost = currentAdminHours * hourlyRate;
 
-    // efficiency from error reduction (% of hours)
-    const hoursBackToTeam = currentAdminHours * (errorRatePct / 100);
-    const efficiencyDollars = hoursBackToTeam * hourlyRate;
-
-    // split efficiency into three “where it happens” buckets
-    // (you can tune these weights; they just drive the sub-KPI rows)
-    const effSplit = {
-      manual: 0.70, // manual processing reduction
-      compliance: 0.20, // reporting/admin efficiency (not penalties)
-      errors: 0.10, // rework avoided
-    };
-
-    const byCategory = {
-      manual: {
-        hours: hoursBackToTeam * effSplit.manual,
-        dollars: hoursBackToTeam * effSplit.manual * hourlyRate,
-      },
-      compliance: {
-        hours: hoursBackToTeam * effSplit.compliance,
-        dollars: hoursBackToTeam * effSplit.compliance * hourlyRate,
-      },
-      errors: {
-        hours: hoursBackToTeam * effSplit.errors,
-        dollars: hoursBackToTeam * effSplit.errors * hourlyRate,
-      },
-    };
-
-    // compliance risk avoidance (expected value)
-    const band = RISK_BANDS[riskBand];
-    const complianceRiskDollars = (band.mid * incidentProbPct) / 100;
-
-    // record-keeping/reporting savings (extra efficiency),
-    // damped so we don’t double-count the original efficiency gains.
-    const RECORD_DAMP = 0.6;
-    const recordKeepingHours =
-      currentAdminHours * (recordKeepingEffPct / 100) * RECORD_DAMP;
-    const recordKeepingDollars = recordKeepingHours * hourlyRate;
-
-    const totalAnnualSavings =
-      efficiencyDollars + complianceRiskDollars + recordKeepingDollars;
-
-    // simple band for the big dial (kept from earlier)
+    // efficiency band = simple mapping from errorRate (still bounded)
     const efficiencyPct = Math.min(100, Math.round(errorRatePct * 25));
 
+    // hours won back from fewer reworks/mistakes
+    const hoursBackToTeam = currentAdminHours * (errorRatePct / 100);
+
+    // base buckets (before segment weighting) -----------------------
+    const baseManualProcessingSavings = hoursBackToTeam * hourlyRate * 0.5; // half of gained time is manual processing
+    const baseComplianceEfficiency = hoursBackToTeam * hourlyRate * 0.25; // part due to compliance/reporting automations
+    const baseErrorReductionSavings = hoursBackToTeam * hourlyRate * 0.25; // rest attributed to fewer corrections
+
+    // record-keeping efficiency: a % of current admin cost
+    const baseRecordKeepingSavings = currentAdminCost * (recordEffPct / 100);
+
+    // compliance risk avoidance from band x probability
+    const bandAvg =
+      penaltyBand === "Low ($0–$10,000)"
+        ? 5000
+        : penaltyBand === "Medium ($10,000–$30,000)"
+        ? 20000
+        : 65000;
+    const baseComplianceRiskAvoid =
+      (bandAvg * Math.max(0, Math.min(100, incidentProbPct))) / 100;
+
+    // segment weighting ---------------------------------------------
+    const seg = SEGMENTS[segment];
+    const manualProcessingSavings =
+      baseManualProcessingSavings * seg.manualFactor;
+    const complianceEfficiencySavings =
+      baseComplianceEfficiency * seg.complianceFactor;
+    const errorReductionSavings = baseErrorReductionSavings; // neutral weight
+    const recordKeepingSavings = baseRecordKeepingSavings * seg.recordFactor;
+    const complianceRiskAvoidance =
+      baseComplianceRiskAvoid * seg.complianceFactor;
+
+    const efficiencyTimeSaved =
+      manualProcessingSavings +
+      complianceEfficiencySavings +
+      errorReductionSavings;
+
+    const totalAnnualSavings =
+      efficiencyTimeSaved + recordKeepingSavings + complianceRiskAvoidance;
+
     return {
+      // breakdown
+      efficiencyTimeSaved,
+      manualProcessingSavings,
+      complianceEfficiencySavings,
+      errorReductionSavings,
+      recordKeepingSavings,
+      complianceRiskAvoidance,
+      // headline
+      totalAnnualSavings,
       currentAdminHours,
       currentAdminCost,
       hoursBackToTeam,
-      efficiencyDollars,
-      byCategory,
-      complianceRiskDollars,
-      recordKeepingDollars,
-      totalAnnualSavings,
       efficiencyPct,
     };
   }, [
@@ -242,310 +251,345 @@ export default function Page() {
     avgHoursPerCycle,
     errorRatePct,
     hourlyRate,
-    recordKeepingEffPct,
-    riskBand,
+    recordEffPct,
+    penaltyBand,
     incidentProbPct,
+    segment,
   ]);
 
-  /* -------------------------------- Render -------------------------------- */
+  // simple share handler (copies URL)
+  const doShare = () => {
+    try {
+      navigator.clipboard.writeText(window.location.href);
+      alert("Link copied to clipboard.");
+    } catch {
+      alert(window.location.href);
+    }
+  };
+
+  // print (uses your global print stylesheet if present)
+  const doPrint = () => window.print();
+
+  // pay cycle options
+  const payCycleOpts = [
+    { label: "52 (Weekly)", value: 52 },
+    { label: "26 (Fortnightly)", value: 26 },
+    { label: "24 (Semi-monthly)", value: 24 },
+    { label: "12 (Monthly)", value: 12 },
+  ];
+
+  const nzMoney = (n: number) =>
+    n.toLocaleString("en-NZ", {
+      style: "currency",
+      currency: "NZD",
+      maximumFractionDigits: 0,
+    });
+
+  const nzHours = (n: number) =>
+    `${Math.round(n).toLocaleString("en-NZ")} hrs`;
+
+  /* ────────────────────────────────────────────────────────────────────────── */
 
   return (
-    <main className="max-w-6xl mx-auto px-4 py-8">
-      <header className="mb-6">
-        <h1 className="text-3xl md:text-4xl font-bold">
+    <main className="mx-auto max-w-6xl px-4 pb-16 pt-8">
+      {/* Header row */}
+      <div className="mb-6 flex items-center justify-between">
+        <h1 className="text-3xl md:text-4xl font-extrabold text-slate-900 tracking-tight">
           Datapay ROI / Efficiency Calculator
         </h1>
-      </header>
 
-      <div className="grid md:grid-cols-3 gap-6 md:items-start print:gap-3">
-        {/* LEFT: Inputs */}
+        <div className="flex items-center gap-2">
+          <SegmentToggle value={segment} onChange={setSegment} />
+
+          {/* Share & Export */}
+          <button
+            onClick={doShare}
+            className="badge bg-white"
+            title="Copy a link to this calculator"
+          >
+            Share
+          </button>
+          <button
+            onClick={doPrint}
+            className="badge bg-white"
+            title="Export a clean PDF"
+          >
+            Export PDF
+          </button>
+        </div>
+      </div>
+
+      <div className="grid gap-6 md:grid-cols-3">
+        {/* Inputs */}
         <section className="card">
-          <div className="card-pad space-y-6">
-            <h2 className="text-xl font-semibold">Inputs</h2>
+          <div className="card-pad">
+            <h2 className="text-xl font-bold mb-4">Inputs</h2>
 
-            <div className="space-y-1">
-              <label className="label">Employees</label>
+            {/* Employees */}
+            <div className="mb-5">
+              <Label>
+                Employees <InfoDot title="Headcount used to set context; main driver is admin time & error rate." />
+              </Label>
               <input
-                className="input"
+                className="input mt-2"
                 type="number"
-                min={1}
-                step={1}
                 value={employees}
-                onChange={(e) => setEmployees(Number(e.target.value))}
+                onChange={(e) => setEmployees(Number(e.target.value || 0))}
+                min={1}
               />
             </div>
 
-            <div className="space-y-1">
-              <label className="label">Pay cycles per year</label>
+            {/* Pay cycles */}
+            <div className="mb-5">
+              <Label>
+                Pay cycles per year <InfoDot title="Weekly=52, Fortnightly=26, Semi-monthly=24, Monthly=12." />
+              </Label>
               <select
-                className="select"
+                className="select mt-2"
                 value={payCycles}
                 onChange={(e) => setPayCycles(Number(e.target.value))}
               >
-                {PAY_CYCLES.map((c) => (
-                  <option key={c.value} value={c.value}>
-                    {c.label}
+                {payCycleOpts.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
                   </option>
                 ))}
               </select>
             </div>
 
-            <div>
-              <div className="label mb-2">Avg payroll hours / cycle</div>
+            {/* Avg payroll hours / cycle */}
+            <div className="mb-5">
+              <Label>
+                Avg payroll hours / cycle{" "}
+                <InfoDot title="Typical time your team spends running payroll each pay cycle." />
+              </Label>
               <input
-                className="slider"
+                className="w-full mt-3"
                 type="range"
                 min={1}
-                max={20}
+                max={40}
                 step={0.5}
                 value={avgHoursPerCycle}
                 onChange={(e) => setAvgHoursPerCycle(Number(e.target.value))}
               />
-              <div className="mt-2 text-sm">{avgHoursPerCycle} hours</div>
+              <Value className="mt-1">{avgHoursPerCycle} hours</Value>
             </div>
 
-            <div>
-              <div className="label mb-2">Error correction rate (%)</div>
+            {/* Error correction rate */}
+            <div className="mb-5">
+              <Label>
+                Error correction rate (%){" "}
+                <InfoDot title="Share of each cycle spent on fixing errors (rework, reversals, re-runs)." />
+              </Label>
               <input
-                className="slider"
+                className="w-full mt-3"
                 type="range"
                 min={0}
-                max={15}
+                max={20}
                 step={0.5}
                 value={errorRatePct}
                 onChange={(e) => setErrorRatePct(Number(e.target.value))}
               />
-              <div className="mt-2 text-sm">{errorRatePct}%</div>
+              <Value className="mt-1">{errorRatePct}%</Value>
             </div>
 
-            <div className="space-y-1">
-              <label className="label">Hourly rate ($)</label>
+            {/* Hourly rate */}
+            <div className="mb-5">
+              <Label>
+                Hourly rate ($){" "}
+                <InfoDot title="Loaded hourly cost of payroll admin time." />
+              </Label>
               <input
-                className="input"
+                className="input mt-2"
                 type="number"
-                min={0}
-                step={1}
+                min={15}
                 value={hourlyRate}
-                onChange={(e) => setHourlyRate(Number(e.target.value))}
+                onChange={(e) => setHourlyRate(Number(e.target.value || 0))}
               />
             </div>
 
-            <div>
-              <div className="label mb-2">
+            {/* Record-keeping efficiency */}
+            <div className="mb-5">
+              <Label>
                 Record-keeping efficiency (%){" "}
-                <InfoTip
-                  title="Record-keeping efficiency"
-                  content={
-                    <>
-                      Additional hours saved from digitised records & reporting
-                      (7-year retention). Damped to avoid double-counting the
-                      base efficiency.
-                    </>
-                  }
-                />
-              </div>
+                <InfoDot title="Efficiency from digital storage & retrieval (NZ requires payroll records ≥7 years)." />
+              </Label>
               <input
-                className="slider"
+                className="w-full mt-3"
                 type="range"
                 min={0}
                 max={15}
                 step={0.5}
-                value={recordKeepingEffPct}
-                onChange={(e) =>
-                  setRecordKeepingEffPct(Number(e.target.value))
-                }
+                value={recordEffPct}
+                onChange={(e) => setRecordEffPct(Number(e.target.value))}
               />
-              <div className="mt-2 text-sm">{recordKeepingEffPct}%</div>
+              <Value className="mt-1">{recordEffPct}%</Value>
             </div>
 
-            <div className="space-y-1">
-              <label className="label">
+            {/* Compliance band */}
+            <div className="mb-5">
+              <Label>
                 Compliance penalty band{" "}
-                <InfoTip
-                  title="Compliance penalty band"
-                  content={
-                    <>
-                      Midpoint of typical remediation/penalty ranges used for
-                      expected value calculations.
-                    </>
-                  }
-                />
-              </label>
+                <InfoDot title="Average remediation/penalty used for risk-avoidance modelling." />
+              </Label>
               <select
-                className="select"
-                value={riskBand}
-                onChange={(e) => setRiskBand(e.target.value as RiskBandKey)}
+                className="select mt-2"
+                value={penaltyBand}
+                onChange={(e) =>
+                  setPenaltyBand(
+                    e.target.value as
+                      | "Low ($0–$10,000)"
+                      | "Medium ($10,000–$30,000)"
+                      | "High ($30,000–$100,000)"
+                  )
+                }
               >
-                {Object.entries(RISK_BANDS).map(([k, v]) => (
-                  <option key={k} value={k}>
-                    {v.label}
-                  </option>
-                ))}
+                <option>Low ($0–$10,000)</option>
+                <option>Medium ($10,000–$30,000)</option>
+                <option>High ($30,000–$100,000)</option>
               </select>
             </div>
 
-            <div>
-              <div className="label mb-2">
+            {/* Incident probability */}
+            <div className="mb-3">
+              <Label>
                 Incident probability (annual %){" "}
-                <InfoTip
-                  title="Incident probability"
-                  content={
-                    <>
-                      Annual chance of a compliance incident that triggers
-                      remediation/penalties.
-                    </>
-                  }
-                />
-              </div>
+                <InfoDot title="Likelihood of a compliance incident in a given year." />
+              </Label>
               <input
-                className="slider"
+                className="w-full mt-3"
                 type="range"
                 min={0}
-                max={25}
+                max={30}
                 step={1}
                 value={incidentProbPct}
                 onChange={(e) => setIncidentProbPct(Number(e.target.value))}
               />
-              <div className="mt-2 text-sm">{incidentProbPct}%</div>
+              <Value className="mt-1">{incidentProbPct}%</Value>
             </div>
           </div>
         </section>
 
-        {/* MIDDLE: Gauge + ROI breakdown (fills the space) */}
+        {/* Middle: Gauge + breakdown */}
         <section className="card">
-          <div className="card-pad space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-lg font-semibold">Efficiency potential</h3>
+          <div className="card-pad">
+            <h2 className="text-xl font-bold">Efficiency potential</h2>
+
+            <SemiGauge percent={efficiencyPct} className="mt-4" />
+
+            <h3 className="mt-6 text-sm font-semibold text-slate-700">
+              Your total annual ROI breakdown
+            </h3>
+
+            <div className="mt-3 space-y-2">
+              <div className="kpi">
+                <span className="text-slate-700">
+                  Efficiency (time saved) <InfoDot title="Sum of manual processing, compliance efficiencies and error rework avoided." />
+                </span>
+                <strong>{nzMoney(efficiencyTimeSaved)}</strong>
+              </div>
+
+              <div className="kpi">
+                <span className="text-slate-700">
+                  Compliance & risk avoidance{" "}
+                  <InfoDot title="Expected value of avoided penalties & remediation from better compliance." />
+                </span>
+                <strong>{nzMoney(complianceRiskAvoidance)}</strong>
+              </div>
+
+              <div className="kpi">
+                <span className="text-slate-700">
+                  Record-keeping & reporting{" "}
+                  <InfoDot title="Efficiency from digital records/retrieval, reporting and audits." />
+                </span>
+                <strong>{nzMoney(recordKeepingSavings)}</strong>
+              </div>
             </div>
 
-            <MainGauge valuePct={efficiencyPct} />
+            <div className="mt-4 space-y-2">
+              <div className="kpi">
+                <span className="text-slate-700">
+                  Manual processing <InfoDot title="Reduced keying, imports/exports, and handoffs." />
+                </span>
+                <span className="text-slate-500 mr-2">
+                  {nzHours(hoursBackToTeam * 0.5)}
+                </span>
+                <strong>{nzMoney(manualProcessingSavings)}</strong>
+              </div>
 
-            <div className="pt-3 border-t border-slate-200 space-y-3">
-              <h4 className="text-base font-semibold">
-                Your total annual ROI breakdown
-              </h4>
+              <div className="kpi">
+                <span className="text-slate-700">
+                  Compliance & reporting (efficiency){" "}
+                  <InfoDot title="Less admin preparing filings and reconciliations." />
+                </span>
+                <span className="text-slate-500 mr-2">
+                  {nzHours(hoursBackToTeam * 0.25)}
+                </span>
+                <strong>{nzMoney(complianceEfficiencySavings)}</strong>
+              </div>
 
-              <MiniGauge
-                label="Efficiency (time saved)"
-                dollars={efficiencyDollars}
-                total={totalAnnualSavings}
-                tip={
-                  <>
-                    Automation reduces manual handling and rework. Split across
-                    manual processing, reporting and error reduction for
-                    clarity.
-                  </>
-                }
-              />
-              <MiniGauge
-                label="Compliance & risk avoidance"
-                dollars={complianceRiskDollars}
-                total={totalAnnualSavings}
-                tip={
-                  <>
-                    Expected value of avoided remediation/penalties (band ×
-                    annual probability).
-                  </>
-                }
-              />
-              <MiniGauge
-                label="Record-keeping & reporting"
-                dollars={recordKeepingDollars}
-                total={totalAnnualSavings}
-                tip={
-                  <>
-                    Savings from digitised records & reporting (7-year
-                    retention). Damped to avoid double counting.
-                  </>
-                }
-              />
-
-              {/* Optional finer split for payroll pros */}
-              <div className="mt-2 grid gap-2">
-                <div className="kpi">
-                  <div className="label">
-                    Manual processing
-                    <InfoTip
-                      title="Manual processing"
-                      content="Reduction in repetitive input/approval handling, imports, reconciliations."
-                    />
-                  </div>
-                  <div className="value">
-                    {nzMoney(byCategory.manual.dollars)}
-                    <span className="text-slate-400 text-sm ml-2">
-                      ({Math.round(byCategory.manual.hours)} hrs)
-                    </span>
-                  </div>
-                </div>
-
-                <div className="kpi">
-                  <div className="label">
-                    Compliance & reporting (efficiency)
-                    <InfoTip
-                      title="Compliance & reporting (efficiency)"
-                      content="Faster statutory reporting/audit trails (PAYE, ESCT, Holidays Act artefacts, GL posting)."
-                    />
-                  </div>
-                  <div className="value">
-                    {nzMoney(byCategory.compliance.dollars)}
-                    <span className="text-slate-400 text-sm ml-2">
-                      ({Math.round(byCategory.compliance.hours)} hrs)
-                    </span>
-                  </div>
-                </div>
-
-                <div className="kpi">
-                  <div className="label">
-                    Error reduction (rework avoided)
-                    <InfoTip
-                      title="Error reduction"
-                      content="Fewer corrections & reruns via validation and workflow controls."
-                    />
-                  </div>
-                  <div className="value">
-                    {nzMoney(byCategory.errors.dollars)}
-                    <span className="text-slate-400 text-sm ml-2">
-                      ({Math.round(byCategory.errors.hours)} hrs)
-                    </span>
-                  </div>
-                </div>
+              <div className="kpi">
+                <span className="text-slate-700">
+                  Error reduction (rework avoided){" "}
+                  <InfoDot title="Fewer reruns, reversals and off-cycle fixes." />
+                </span>
+                <span className="text-slate-500 mr-2">
+                  {nzHours(hoursBackToTeam * 0.25)}
+                </span>
+                <strong>{nzMoney(errorReductionSavings)}</strong>
               </div>
             </div>
           </div>
         </section>
 
-        {/* RIGHT: Headline KPIs + CTA */}
+        {/* Headline card */}
         <section className="card">
-          <div className="card-pad space-y-4">
-            <h3 className="text-lg font-semibold">Your headline impact</h3>
+          <div className="card-pad">
+            <h2 className="text-xl font-bold">Your headline impact</h2>
 
-            <div className="kpi">
-              <div className="label">Total annual savings</div>
-              <div className="value">{nzMoney(totalAnnualSavings)}</div>
-            </div>
+            <div className="mt-4 space-y-3">
+              <div className="kpi">
+                <span className="text-slate-700">
+                  Total annual savings{" "}
+                  <InfoDot title="Combined efficiency, record-keeping, and risk avoidance." />
+                </span>
+                <strong>{nzMoney(totalAnnualSavings)}</strong>
+              </div>
 
-            <div className="kpi">
-              <div className="label">Admin time cost (current)</div>
-              <div className="value">{nzMoney(currentAdminCost)}</div>
-            </div>
+              <div className="kpi">
+                <span className="text-slate-700">
+                  Admin time cost (current){" "}
+                  <InfoDot title="What your team time currently costs to run payroll." />
+                </span>
+                <strong>{nzMoney(currentAdminCost)}</strong>
+              </div>
 
-            <div className="kpi">
-              <div className="label">Hours back to team</div>
-              <div className="value">
-                {`${Math.round(hoursBackToTeam).toLocaleString()} hrs / yr`}
+              <div className="kpi">
+                <span className="text-slate-700">
+                  Hours back to team{" "}
+                  <InfoDot title="Annual hours freed by fewer reworks & smoother runs." />
+                </span>
+                <strong>{nzHours(hoursBackToTeam)}</strong>
               </div>
             </div>
 
-            <div className="pt-2">
+            <div className="mt-6">
               <a
-                className="btn"
                 href="https://cal.com/"
                 target="_blank"
                 rel="noreferrer"
+                className="btn w-full justify-center"
               >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                {/* calendar icon */}
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  className="mr-2"
+                >
                   <path
-                    d="M8 7h8M4 9h16M6 5v4m12-4v4M5 9h14v10H5z"
+                    d="M8 7h8M3 10h18M4 21h16a1 1 0 0 0 1-1V7a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v13a1 1 0 0 0 1 1Z"
                     stroke="currentColor"
                     strokeWidth="2"
                     strokeLinecap="round"
@@ -558,14 +602,37 @@ export default function Page() {
         </section>
       </div>
 
-      {/* Top badges */}
-      <div className="mt-6 flex flex-wrap gap-3 print:hidden">
-        <span className="badge bg-white">Council</span>
-        <span className="badge bg-white">Enterprise</span>
-        <span className="badge bg-white">Share</span>
-        <span className="badge bg-white">Export PDF</span>
+      {/* Bottom badges for small screens (optional) */}
+      <div className="mt-6 flex flex-wrap gap-3 print:hidden md:hidden">
+        <button
+          className={[
+            "badge",
+            segment === "Council"
+              ? "bg-teal-700 text-white"
+              : "bg-white text-slate-700",
+          ].join(" ")}
+          onClick={() => setSegment("Council")}
+        >
+          Council
+        </button>
+        <button
+          className={[
+            "badge",
+            segment === "Enterprise"
+              ? "bg-teal-700 text-white"
+              : "bg-white text-slate-700",
+          ].join(" ")}
+          onClick={() => setSegment("Enterprise")}
+        >
+          Enterprise
+        </button>
+        <button className="badge bg-white" onClick={doShare}>
+          Share
+        </button>
+        <button className="badge bg-white" onClick={doPrint}>
+          Export PDF
+        </button>
       </div>
     </main>
   );
 }
-
